@@ -4,26 +4,22 @@ import codecs
 import logging
 import sys
 
-#np.random.seed(42)
 log = logging.getLogger('CNNTrainAndTest.data_helpers')
 
 def batch_iter(data, batch_size, num_epochs, shuffle=False):
     """
     Generates a batch iterator for a dataset.
     """
-
     data = np.array(data)
     data_size = len(data)
     num_batches_per_epoch = int((len(data)-1)/batch_size) + 1
     for epoch in range(num_epochs):
         # Shuffle the data at each epoch
-        
         if shuffle:
             shuffle_indices = np.random.permutation(np.arange(data_size))
             shuffled_data = data[shuffle_indices]
         else:
             shuffled_data = data
-
         for batch_num in range(num_batches_per_epoch):
             start_index = batch_num * batch_size
             end_index = min((batch_num + 1) * batch_size, data_size)
@@ -102,8 +98,6 @@ class JimiClassifyData(object):
     def load_data(self,inFilePath):
         x_asr_data = []
         x_trs_data = []
-        x_asr_data_real=[]
-        x_trs_data_real=[]
         y_data = []
         label_num = {}
 
@@ -117,8 +111,6 @@ class JimiClassifyData(object):
 #             trs_data = fields[1]
             asr_data = fields[1]
             trs_data = fields[2]
-#             if label=='other':
-#                 print(line)
             y_data.append(np.arange(len(self.id2labels)) == self.label2ids[label])
 
             tokenIds_asr, tokenStr_asr = self.format_sentence(asr_data)
@@ -126,9 +118,6 @@ class JimiClassifyData(object):
 
             x_asr_data.append(tokenIds_asr)
             x_trs_data.append(tokenIds_trs)
-            
-            x_asr_data_real.append(asr_data.replace(' ',''))
-            x_trs_data_real.append(trs_data.replace(' ',''))
 
 
         fIn.close()
@@ -137,7 +126,7 @@ class JimiClassifyData(object):
 
         y = np.array(y_data).astype(np.int32)
 
-        return x1,x2, y, label_num ,x_asr_data_real,x_trs_data_real
+        return x1,x2, y, label_num
     def get_label_weight(self, label_num, ins_num):
         label_weight = [0]*len(self.label2ids)
         label_weight = np.array([ pow((1-label_num[label]*1.0/ins_num), 1) for label in self.id2labels ], dtype=np.float32)
@@ -156,10 +145,10 @@ class JimiClassifyData(object):
 
         tokenIds = []
         for token in token_res:
-            if token in self.word2ids:
-                tokenIds.append(self.word2ids[token])
-            else:
-                tokenIds.append(self.unknown_id)
+             if token in self.word2ids:
+                 tokenIds.append(self.word2ids[token])
+             else:
+                 tokenIds.append(self.unknown_id)
         return tokenIds, tokenStr
 
     

@@ -102,6 +102,7 @@ class TextCNN(object):
                 pooled_trs_outputs.append(pooled_trs)                
                 ##------------------------------------------------------------------------
                 
+                ## 隐层的 ca_loss可以尝试==================================================
                 
         # Combine all the pooled features
         num_filters_total = num_filters * len(filter_sizes)
@@ -147,13 +148,11 @@ class TextCNN(object):
             self.loss_trs = tf.reduce_mean(losses_trs) 
             self.loss_asr = tf.reduce_mean(losses_asr)
             #self.kl_loss = tf.reduce_mean(self.kl_for_log_probs(self.scores_asr, self.scores_trs))#
-            if self.e3!=0:
-                self.kl_loss = tf.reduce_mean(self.kl_loss_v3(self.scores_asr, self.scores_trs))
-                #self.kl_loss = tf.reduce_mean(losses_kl)
+            self.kl_loss = tf.reduce_mean(self.kl_loss_v3(self.scores_asr, self.scores_trs))
+            #self.kl_loss = tf.reduce_mean(losses_kl)
 
-                self.loss =  self.e1*self.loss_trs + self.e2*self.loss_asr + self.e3*self.kl_loss
-            else:
-                self.loss =  self.e1*self.loss_trs + self.e2*self.loss_asr
+            self.loss =  self.e1*self.loss_trs + self.e2*self.loss_asr + self.e3*self.kl_loss
+            
             
             
             #KL_loss = kl(prob_a, prob_b)
@@ -182,4 +181,4 @@ class TextCNN(object):
     def kl_loss_v3(self,y_pred,y_true):
         y_true = tf.nn.softmax(y_true)
         y_pred = tf.nn.softmax(y_pred)
-        return tf.reduce_sum(y_true*tf.math.log(y_true/(y_pred+1e-10)+1e-10),axis=1)  #+1e-10
+        return tf.reduce_sum(y_true*tf.math.log(y_true/(y_pred+1e-15)),axis=1)  #+1e-10

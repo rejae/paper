@@ -1,0 +1,359 @@
+# coding=utf-8
+import tensorflow as tf
+import pandas as pd
+import numpy as np
+import os
+import sys
+import codecs
+import getopt
+import time
+import logging
+import datetime
+import data_helpers
+from text_cnn import TextCNN
+from tensorflow.contrib import learn
+
+
+# log
+log = logging.getLogger('CNNTrainAndTest')
+log.setLevel(logging.DEBUG)
+hdr = logging.StreamHandler(sys.__stdout__)
+formatter = logging.Formatter('[%(asctime)s] %(name)s:%(levelname)s: %(message)s')
+hdr.setFormatter(formatter)
+log.addHandler(hdr)
+
+# Parameters
+# ==================================================
+
+#get outside parameter
+argv = sys.argv[1:]
+try:
+    opts, args = getopt.getopt(argv, "m:v:r:", ["modelname=","version=","rootdir="])
+except getopt.GetoptError:
+    print('parameter error')
+    sys.exit(2)
+for opt, arg in opts:
+    if opt in ("-m", "--modelname"):
+        modelname = arg
+    elif opt in ("-r", "--rootdir"):
+        rootdir = arg
+log.info('model: %s' % modelname)
+log.info('rootdir: %s' % rootdir)
+
+timestamp = str(int(time.time()))
+data_root_dir = rootdir + "/prepared"
+train_data_dir = data_root_dir + "/train.txt"
+test_data_dir = data_root_dir + "/test.txt"
+labels_dir = data_root_dir + "/cateAndQuest.txt"
+all_data_dir = data_root_dir + "/all.txt"
+words_dir = data_root_dir + "/words.txt"
+vectors_dir = data_root_dir + "/vectors.txt"
+model_file_dir = rootdir + "/model/"
+if not os.path.exists(model_file_dir):
+    os.makedirs(model_file_dir)
+export_dir = model_file_dir + "/export/"
+
+modelProp_dir = model_file_dir + "modelProp.txt"
+cateProp_dir = model_file_dir + "cateProp.txt"
+labelId_dir = model_file_dir + "label_id.txt"
+wordId_dir = model_file_dir + "word_id.txt"
+restlt_dir = model_file_dir + "result_"+modelname+".txt"
+
+# Data loading params
+tf.flags.DEFINE_string("modelname", "", "Upper param")
+tf.flags.DEFINE_string("version", "", "Upper param")
+tf.flags.DEFINE_string("rootdir", "", "Upper param")
+
+tf.flags.DEFINE_string("m", "", "Upper param")
+tf.flags.DEFINE_string("v", "", "Upper param")
+tf.flags.DEFINE_string("r", "", "Upper param")
+
+tf.flags.DEFINE_string("train_corpus_file", train_data_dir, "The marked character-level model corpus file.")
+tf.flags.DEFINE_string("test_corpus_file", test_data_dir, "The marked character-level model test corpus file.")
+tf.flags.DEFINE_string("all_corpus_file", all_data_dir, "The marked character-level model all corpus file.")
+tf.flags.DEFINE_string("labels_dir", labels_dir, "label data")
+tf.flags.DEFINE_string("words_dir", words_dir, "label data")
+tf.flags.DEFINE_string("embedding_file", vectors_dir, "word2vec trained vector data")
+tf.flags.DEFINE_string("export_path", export_dir, "word2vec trained vector data")
+tf.flags.DEFINE_string("export_tag", "CNN", "train data")
+tf.flags.DEFINE_integer("max_seq_len", 80, "max length of sequence")
+
+# Model Hyperparameters
+tf.flags.DEFINE_integer("embedding_dim", 128, "Dimensionality of character embedding (default: 128)")
+tf.flags.DEFINE_string("filter_sizes", "3,4,5", "Comma-separated filter sizes (default: '3,4,5')")
+tf.flags.DEFINE_integer("num_filters", 128, "Number of filters per filter size (default: 128)")
+tf.flags.DEFINE_float("dropout_keep_prob", 0.5, "Dropout keep probability (default: 0.5)")
+tf.flags.DEFINE_float("l2_reg_lambda", 0.0, "L2 regularization lambda (default: 0.0)")
+
+# Training parameters
+tf.flags.DEFINE_integer("batch_size", 256, "Batch Size (default: 64)")
+tf.flags.DEFINE_integer("num_train_epochs", 100, "Number of train data set training epochs (default: 200)")
+tf.flags.DEFINE_integer("num_all_epochs", 20, "Number of all data set training epochs (default: 200)")
+tf.flags.DEFINE_integer("evaluate_every", 100, "Evaluate model on dev set after this many steps (default: 100)")
+tf.flags.DEFINE_integer("checkpoint_every", 1000, "Save model after this many steps (default: 100)")
+tf.flags.DEFINE_integer("num_checkpoints", 5, "Number of checkpoints to store (default: 5)")
+tf.flags.DEFINE_integer("early_stop_epoch", 4, "early stop epoch")
+tf.flags.DEFINE_float("max_accept_error", 0.001,"Maximum acceptable error")
+# Misc Parameters
+tf.flags.DEFINE_boolean("allow_soft_placement", True, "Allow device soft device placement")
+tf.flags.DEFINE_boolean("log_device_placement", False, "Log placement of ops on devices")
+tf.flags.DEFINE_string("device_num", "", "How many Devices(cpu/gpu) to use.")
+tf.flags.DEFINE_boolean("use_gpu", True, "whether to use gpu")
+
+
+FLAGS = tf.flags.FLAGS
+data_helper = data_helpers.JimiClassifyData(label_file = FLAGS.labels_dir, words_file = FLAGS.words_dir, max_sequence_len = FLAGS.max_seq_len)
+embeddings = data_helpers.load_embeddings(FLAGS.embedding_file)
+
+def preprocess():
+    # Data Preparation
+    # ==================================================
+
+    # Load data
+    log.info("Loading data...")
+    train_x, train_y, train_label_num = data_helper.load_data(FLAGS.train_corpus_file, 100000)
+    test_x, test_y, test_label_num = data_helper.load_data(FLAGS.test_corpus_file, 100000)
+    all_x, all_y, all_label_num = data_helper.load_data(FLAGS.all_corpus_file, 100000)
+    log.info("Train: %d, Test: %d, All: %d" % (len(train_x), len(test_x), len(all_x)))
+    return train_x, train_y, test_x, test_y, all_x, all_y
+
+def generateReport(pre_cate, origin_cate_list):
+    origin_cate = []
+    for tmp in origin_cate_list:
+        label_index = int(np.argwhere(tmp == 1))
+        origin_cate.append(label_index)
+    origin_cate = np.asarray(origin_cate).astype(np.int32)
+    
+    bus_precise = 0.0
+    all_precise = 0.0
+    if "other" in data_helper.id2labels:
+        other_id = data_helper.label2ids["other"]
+    else:
+        other_id = -1
+    correctBussiness = np.sum((pre_cate == origin_cate) & (origin_cate != other_id))
+    totalBussiness = np.sum(origin_cate != other_id)
+    if totalBussiness == 0:
+        totalBussiness = 1
+    bus_precise = correctBussiness / (totalBussiness + 0.0)
+    correct = np.sum(pre_cate == origin_cate)
+    counter = len(pre_cate)
+    log.info("correct:%d" % correct)
+    log.info("counter:%d" % counter)
+    all_precise = correct / (counter + 0.0)
+    
+    CateProp = {}
+    for labelId in range(len(data_helper.id2labels)):
+        correctSigleCate = np.sum((pre_cate == origin_cate) & (origin_cate == labelId))
+        totalSingleCate = np.sum(origin_cate == labelId)
+        if totalSingleCate == 0:
+            totalSingleCate = 1
+        CateProp[data_helper.id2labels[labelId]] = correctSigleCate / (totalSingleCate + 0.0)
+    # Generate ModelProp.txt file
+    with codecs.open(modelProp_dir, 'w', 'utf-8') as modelPropWriter:
+      if "other" in data_helper.id2labels:
+          other_precise = CateProp["other"]
+      else:
+          other_precise = 0.0
+      modelPropWriter.write(str(all_precise) + "\t" + str(bus_precise) + "\t" + str(other_precise) + "\t" + "0.7")
+
+    # Generate CateProp.txt file
+    with codecs.open(cateProp_dir, 'w', 'utf-8') as catePropWriter:
+      for k, v in CateProp.items():
+          catePropWriter.write(modelname + "\t" + str(k) + "\t" + str(v) + "\n") 
+
+    # Generate label_id.txt  file
+    with codecs.open(labelId_dir, 'w', 'utf-8') as labelIdWriter:
+      for i in range(len(data_helper.id2labels)):
+          labelIdWriter.write(data_helper.id2labels[i] + "\t" + str(i) + "\t" + data_helper.labe2questions[i]  + "\n")
+
+    # Generate word_id.txt file
+    with codecs.open(wordId_dir, 'w', 'utf-8') as wordIdWriter:
+      for i in range(len(data_helper.id2words)):
+          wordIdWriter.write(data_helper.id2words[i] + " " + str(i + 1) + "\n")
+    
+    df = pd.DataFrame({'predictions': pre_cate, 'labels': origin_cate})
+    return df
+
+def train(x_train, y_train, x_test, y_test,  x_all, y_all):
+    # Training
+    # ==================================================
+
+    with tf.Graph().as_default():
+        session_conf = tf.ConfigProto(
+          allow_soft_placement=FLAGS.allow_soft_placement,
+          log_device_placement=FLAGS.log_device_placement)
+        
+        session_conf.gpu_options.per_process_gpu_memory_fraction = 0.95 # maximun alloc gpu50% of MEM
+        sess = tf.Session(config=session_conf)
+        with sess.as_default():
+            cnn = TextCNN(
+                sequence_length=x_train.shape[1],
+                num_classes=y_train.shape[1],
+                vocab_size=len(data_helper.id2words),
+                embedding_size=FLAGS.embedding_dim,
+                filter_sizes=list(map(int, FLAGS.filter_sizes.split(","))),
+                num_filters=FLAGS.num_filters,
+                embeddings=embeddings,
+                l2_reg_lambda=FLAGS.l2_reg_lambda)
+
+            # Define Training procedure
+            global_step = tf.Variable(0, name="global_step", trainable=False)
+            optimizer = tf.train.AdamOptimizer(1e-3)
+            grads_and_vars = optimizer.compute_gradients(cnn.loss)
+            train_op = optimizer.apply_gradients(grads_and_vars, global_step=global_step)
+
+            # Keep track of gradient values and sparsity (optional)
+            grad_summaries = []
+            for g, v in grads_and_vars:
+                if g is not None:
+                    grad_hist_summary = tf.summary.histogram("{}/grad/hist".format(v.name), g)
+                    sparsity_summary = tf.summary.scalar("{}/grad/sparsity".format(v.name), tf.nn.zero_fraction(g))
+                    grad_summaries.append(grad_hist_summary)
+                    grad_summaries.append(sparsity_summary)
+            grad_summaries_merged = tf.summary.merge(grad_summaries)
+
+            # Summaries for loss and accuracy
+            loss_summary = tf.summary.scalar("loss", cnn.loss)
+            acc_summary = tf.summary.scalar("accuracy", cnn.accuracy)
+
+            # Train Summaries
+            train_summary_op = tf.summary.merge([loss_summary, acc_summary, grad_summaries_merged])
+            train_summary_dir = os.path.join(model_file_dir, "summaries", "train")
+            train_summary_writer = tf.summary.FileWriter(train_summary_dir, sess.graph)
+
+            # Dev summaries
+            dev_summary_op = tf.summary.merge([loss_summary, acc_summary])
+            dev_summary_dir = os.path.join(model_file_dir, "summaries", "dev")
+            dev_summary_writer = tf.summary.FileWriter(dev_summary_dir, sess.graph)
+
+            # Checkpoint directory. Tensorflow assumes this directory already exists so we need to create it
+            checkpoint_dir = os.path.abspath(os.path.join(model_file_dir, "checkpoints"))
+            checkpoint_prefix = os.path.join(checkpoint_dir, "model")
+            if not os.path.exists(checkpoint_dir):
+                os.makedirs(checkpoint_dir)
+            saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
+
+            # Initialize all variables
+            sess.run(tf.global_variables_initializer())
+
+            def train_step(x_batch, y_batch):
+                """
+                A single training step
+                """
+                feed_dict = {
+                  cnn.input_x: x_batch,
+                  cnn.input_y: y_batch,
+                  cnn.dropout_keep_prob: FLAGS.dropout_keep_prob
+                }
+                _, step, summaries, loss, accuracy = sess.run(
+                    [train_op, global_step, train_summary_op, cnn.loss, cnn.accuracy],
+                    feed_dict)
+                time_str = datetime.datetime.now().isoformat()
+                log.info("{}: step {}, loss {:g}, acc {:g}".format(time_str, step, loss, accuracy))
+                train_summary_writer.add_summary(summaries, step)
+            def testDataEvaluate(x_valid, y_valid, writer=None):
+                """
+                Evaluates model on a test set
+                """
+                predictions_list = []
+                origin_list = []
+                test_batches = data_helpers.batch_iter(list(zip(x_valid, y_valid)), FLAGS.batch_size, 1,shuffle=False)
+                for test_batche in test_batches:
+                    test_x_batch, test_y_batch = zip(*test_batche)
+                    feed_dict = {
+                      cnn.input_x: test_x_batch,
+                      cnn.input_y: test_y_batch,
+                      cnn.dropout_keep_prob: 1.0
+                    }
+                    predictions_list.extend(sess.run(cnn.scores, feed_dict))
+                    origin_list.extend(test_y_batch)
+
+                #print(predictions_list)
+                with codecs.open(restlt_dir,'w','utf-8') as outf:
+                    for i in range(len(predictions_list)):
+                        resu=list(predictions_list[i])
+                        outf.write(' '.join(str(value) for value in resu))
+                        outf.write('\n')
+                
+                #print(origin_list)
+                #return generateReport(predictions_list, origin_list)
+
+            #def testDataEvaluate(x_valid, y_valid, writer=None):
+                """
+                Evaluates model on a test set
+                """
+                #feed_dict = {
+                  #cnn.input_x: x_valid,
+                  #cnn.input_y: y_valid,
+                  #cnn.dropout_keep_prob: 1.0
+                #}
+                #step, summaries, loss, accuracy, predictions = sess.run(
+                    #[global_step, dev_summary_op, cnn.loss, cnn.accuracy, cnn.predictions],
+                    #feed_dict)
+                #time_str = datetime.datetime.now().isoformat()
+                #log.info("{}: step {}, loss {:g}, acc {:g}, prediction legth {}".format(time_str, step, loss, accuracy, len(predictions)))
+                #if writer:
+                    #writer.add_summary(summaries, step)
+                #return generateReport(predictions, y_valid)
+                
+            # trainDataSet training
+            batches = data_helpers.batch_iter(
+                list(zip(x_train, y_train)), FLAGS.batch_size, FLAGS.num_train_epochs)
+            epoch_step = round(len(x_train)/FLAGS.batch_size)
+            max_acc = 0.0
+            num = 1
+            break_epoch = 0
+            for batch in batches:
+                x_batch, y_batch = zip(*batch)
+                train_step(x_batch, y_batch)
+                current_step = tf.train.global_step(sess, global_step)
+                
+                if current_step % FLAGS.checkpoint_every == 0:
+                    path = saver.save(sess, checkpoint_prefix, global_step=current_step)
+                    log.info("Saved model checkpoint to {}\n".format(path))
+                '''if current_step % epoch_step == 0:
+                    log.info("Begin to evalute test_dataset.")
+                    test_df = testDataEvaluate(x_test, y_test, writer=dev_summary_writer)
+                    tmp_acc = (test_df['predictions'] == test_df['labels']).mean()
+                    log.info('test accuracy: %f, epoch: %d' % (tmp_acc, current_step / epoch_step))
+                    if tmp_acc - max_acc > FLAGS.max_accept_error:
+                        num = 1
+                        max_acc = tmp_acc
+                    else:
+                        num = num + 1
+                if num > FLAGS.early_stop_epoch :
+                    log.info('trigger early stop')
+                    break_epoch = current_step/epoch_step
+                    log.info('break_epoch: %d, max_acc: %f' % (break_epoch, max_acc))
+                    break'''
+            testDataEvaluate(x_test, y_test, writer=dev_summary_writer)
+            '''log.info('train_dataset train finished! Begin to train all_data. break_epoch: %d' % break_epoch)
+            if break_epoch == 0:
+                break_epoch = FLAGS.num_train_epochs
+            # allDataSet training
+            batches = data_helpers.batch_iter(
+                list(zip(x_all, y_all)), FLAGS.batch_size, int(break_epoch/2))
+            for batch in batches:
+                x_batch, y_batch = zip(*batch)
+                train_step(x_batch, y_batch)
+                current_step = tf.train.global_step(sess, global_step)
+                
+                if current_step % FLAGS.checkpoint_every == 0:
+                    path = saver.save(sess, checkpoint_prefix, global_step=current_step)
+                    log.info("Saved model checkpoint to {}\n".format(path))
+            builder = tf.saved_model.builder.SavedModelBuilder(FLAGS.export_path)
+            builder.add_meta_graph_and_variables(sess,[FLAGS.export_tag])
+            builder.save()'''
+    log.info("CNN train finish!")
+            
+            
+def main(argv=None):
+    train_x_format, train_y, test_x_format, test_y, all_x, all_y = preprocess()
+    train(train_x_format, train_y, test_x_format, test_y, all_x, all_y)
+    #Generte success flag
+    fout = open(data_root_dir + "/" + modelname + "_ok.txt" , 'w')
+    fout.write(timestamp + "\n")
+    fout.close()
+
+if __name__ == '__main__':
+    tf.app.run()
