@@ -1,3 +1,4 @@
+```python
 import tensorflow as tf
 from tensorflow import set_random_seed
 set_random_seed(42)
@@ -182,3 +183,4 @@ class TextCNN(object):
         y_true = tf.nn.softmax(y_true)
         y_pred = tf.nn.softmax(y_pred)
         return tf.reduce_sum(y_true*tf.math.log(y_true/(y_pred+1e-15)),axis=1)  #+1e-10
+```
